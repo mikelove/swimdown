@@ -1,0 +1,1 @@
+python3.6 bin/SUPPA/suppa.py diffSplice -m empirical -i suppa/isoforms.ioi -p suppa/group1_12_isoform.psi suppa/group2_12_isoform.psi -e suppa/group1_12.tpm suppa/group2_12.tpm -o suppa/diff_empirical_12
