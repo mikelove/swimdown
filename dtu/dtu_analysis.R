@@ -21,9 +21,11 @@ suppressPackageStartupMessages({
   library(DEXSeq)
   library(stageR)
   library(iCOBRA)
+  library(ggplot2)
+  library(RColorBrewer)
 })
 
-# DRIMSeq and DEXSeq analyses now saved in respective dirs
+source("dtu_plots.R")
 
 dir <- "res_scaled"
 
@@ -37,19 +39,20 @@ for (n.sub in c(3,6,9,12)) {
   res.txp <- DRIMSeq::results(d, level="feature")
   res.txp$pvalue <- ifelse(is.na(res.txp$pvalue), 1, res.txp$pvalue)
 
-  # try filtering on the SD of proportions
-  getSampleProportions <- function(d) {
+  # filtering on the SD of proportions
+  smallProportionSD <- function(d, filter=.1) {
     cts <- as.matrix(subset(counts(d), select=-c(gene_id, feature_id)))
     gene.cts <- rowsum(cts, counts(d)$gene_id)
     total.cts <- gene.cts[match(counts(d)$gene_id, rownames(gene.cts)),]
-    cts/total.cts
+    props <- cts/total.cts
+    propSD <- sqrt(rowVars(props))
+    propSD < filter
   }
+  filt <- smallProportionSD(d)
   res.txp.filt <- res.txp
-  prop.d <- getSampleProportions(d)
-  res.txp.filt$prop.sd <- sqrt(rowVars(prop.d))
-  res.txp.filt$pvalue[res.txp.filt$prop.sd < .1] <- 1
-  res.txp.filt$adj_pvalue <- p.adjust(res.txp.filt$pvalue, method="BH")
-
+  res.txp.filt$pvalue[filt] <- 1
+  res.txp.filt$adj_pvalue[filt] <- 1
+  
   # stageR analysis for DRIMSeq
 
   strp <- function(x) substr(x,1,15)
@@ -125,27 +128,57 @@ for (n.sub in c(3,6,9,12)) {
   qval <- perGeneQValue(suppa.dxr)
   suppa.g <- data.frame(gene=names(qval), qval=qval)
 
+  # stageR analysis for SUPPA2
+  
+  suppa$pval <- ifelse(is.na(suppa$pval), 1, suppa$pval)
+  pConfirmation <- matrix(suppa$pval,ncol=1)
+  dimnames(pConfirmation) <- list(strp(suppa$txp),"transcript")
+  pScreen <- suppa.qval
+  names(pScreen) <- strp(names(pScreen))
+  tx2gene <- as.data.frame(suppa[,c("txp", "gene")])
+  for (i in 1:2) tx2gene[,i] <- strp(tx2gene[,i])
+  stageRObj <- stageRTx(pScreen=pScreen, pConfirmation=pConfirmation,
+                        pScreenAdjusted=TRUE, tx2gene=tx2gene)
+  stageRObj <- stageWiseAdjustment(object=stageRObj, method="dtu", alpha=0.05)
+  suppressWarnings({
+    suppa.padj <- getAdjustedPValues(stageRObj, order=FALSE, onlySignificantGenes=TRUE)
+  })
+  suppa.padj$dtu <- suppa.padj$txID %in% strp(dtu.txps)
+
+  ## RATs
+
+  load(paste0("rats/rats_boot_",n.sub,".rda"))
+  rats.b.txp <- rats_boot$Transcripts
+  rats.b <- rats_boot$Genes
+  # remove the NA rows by filtering to DRIMSeq genes and txps (same as given to RATs)
+  # (RATs puts rows of NA for genes/txps in the `annot` but not in counts)
+  rats.b.txp <- rats.b.txp[match(res.txp$feature_id, rats.b.txp$target_id),]
+  rats.b <- rats.b[match(res$gene_id, rats.b$parent_id),]
+  # some txps and genes are post-hoc filtered by RATS based on 3 criteria.
+  # we need to generalize the 'DTU' column for any padj cutoff to use iCOBRA.
+  # so set the 'pval' and 'pval_corr' column to 1 for the RATs post-hoc filtered txps and genes
+  rats.b.txp$pval[!(rats.b.txp$elig_fx & rats.b.txp$quant_reprod & rats.b.txp$rep_reprod)] <- 1
+  rats.b.txp$pval_corr[!(rats.b.txp$elig_fx & rats.b.txp$quant_reprod & rats.b.txp$rep_reprod)] <- 1
+  rats.b$pval[!(rats.b$elig_fx & rats.b$quant_reprod & rats.b$rep_reprod)] <- 1
+  rats.b$pval_corr[!(rats.b$elig_fx & rats.b$quant_reprod & rats.b$rep_reprod)] <- 1
+  
+  # stageR analysis for RATs
+
+  pConfirmation <- matrix(rats.b.txp$pval,ncol=1)
+  dimnames(pConfirmation) <- list(strp(rats.b.txp$target_id),"transcript")
+  pScreen <- rats.b$pval_corr
+  names(pScreen) <- strp(rats.b$parent_id)
+  tx2gene <- as.data.frame(rats.b.txp[,c("target_id", "parent_id")])
+  for (i in 1:2) tx2gene[,i] <- strp(tx2gene[,i])
+  stageRObj <- stageRTx(pScreen=pScreen, pConfirmation=pConfirmation,
+                        pScreenAdjusted=TRUE, tx2gene=tx2gene)
+  stageRObj <- stageWiseAdjustment(object=stageRObj, method="dtu", alpha=0.05)
+  suppressWarnings({
+    rats.b.padj <- getAdjustedPValues(stageRObj, order=FALSE, onlySignificantGenes=TRUE)
+  })
+  rats.b.padj$dtu <- rats.b.padj$txID %in% strp(dtu.txps)
+
   print("making plots")
-  
-  # iCOBRA
-  
-  ofdr <- function(padj, alpha=.05) {
-    all.not.dtu <- sapply(with(padj, split(dtu, geneID)), function(x) ! any(x))
-    sig.not.dtu <- sapply(with(padj, split(transcript < alpha & ! dtu, geneID)), any)
-    mean(all.not.dtu | sig.not.dtu)
-  }
-  
-  myicobra <- function(cd, lvl="Gene") {
-    cp <- calculate_performance(cd,
-                                binary_truth="status",
-                                aspect=c("fdrtpr","fdrtprcurve"),
-                                thrs=c(.01,.05,.1))
-    cobraplot <- prepare_data_for_plot(cp)
-    plot_fdrtprcurve(cobraplot, plottype="points",
-                     xaxisrange=c(0,max(fdrtpr(cp)$FDR)),
-                     yaxisrange=c(0,max(fdrtpr(cp)$TPR)),
-                     title=paste0(lvl,"-level screening, n=",n.sub," vs ",n.sub))
-  }  
   
   # gene-level screening
   padj <- data.frame(row.names=txdf$TXNAME)
@@ -154,6 +187,7 @@ for (n.sub in c(3,6,9,12)) {
   padj.gene$DRIMSeq <- res$adj_pvalue[match(rownames(padj.gene), res$gene_id)]
   padj.gene$DEXSeq <- dxr.g$qval[match(rownames(padj.gene), dxr.g$gene)]
   padj.gene$SUPPA2 <- suppa.g$qval[match(rownames(padj.gene), suppa.g$gene)]
+  padj.gene$RATs <- rats.b$pval_corr[match(rownames(padj.gene), rats.b$parent_id)]
   truth <- data.frame(status=as.numeric(rownames(padj.gene) %in% full.dtu.genes),
                       row.names=rownames(padj.gene))
 
@@ -166,31 +200,12 @@ for (n.sub in c(3,6,9,12)) {
   print(myicobra(cd.gene, "Gene", c(1,2,4)))
   dev.off()
 
-  # catching DGE?
-  res$dge <- res$gene_id %in% dge.genes
-  dxr.g$dge <- dxr.g$gene %in% dge.genes
-  suppa.g$dge <- suppa.g$gene %in% dge.genes
-  sum(res$adj_pvalue[res$dge] < .05, na.rm=TRUE)
-  sum(dxr.g$qval[dxr.g$dge] < .05)
-  sum(suppa.g$qval[suppa.g$dge] < .05)
-
-  # stageR txp-level confirmation 
-  alpha <- .05
-  tps <- c(sum(drim.padj$transcript[drim.padj$dtu] < alpha, na.rm=TRUE),
-           sum(drim.filt.padj$transcript[drim.padj$dtu] < alpha, na.rm=TRUE),
-           sum(dex.padj$transcript[dex.padj$dtu] < alpha, na.rm=TRUE))
-  ofdrs <- c(ofdr(drim.padj,alpha=alpha),
-             ofdr(drim.filt.padj,alpha=alpha),
-             ofdr(dex.padj,alpha=alpha))
-  (df <- data.frame(method=c("DRIMSeq","DRIMSeq-filt","DEXSeq"), TP=tps, OFDR=round(ofdrs,3)))
-  write.table(df,row.names=FALSE, quote=FALSE, sep="\t",
-              file=paste0(dir,"/OFDR_",n.sub,".tsv"))
-
   # txp-level
   padj$DRIMSeq <- res.txp$adj_pvalue[match(rownames(padj), res.txp$feature_id)]
   padj$DRIMSeq.filt <- res.txp.filt$adj_pvalue[match(rownames(padj), res.txp.filt$feature_id)]
   padj$DEXSeq <- dxr$padj[match(rownames(padj), dxr$featureID)]
   padj$SUPPA2 <- suppa$padj[match(rownames(padj), suppa$txp)]
+  padj$RATs <- rats.b.txp$pval_corr[match(rownames(padj), rats.b.txp$target_id)]
   truth <- data.frame(status=as.numeric(rownames(padj) %in% dtu.txps),
                       row.names=rownames(padj))
 
@@ -203,42 +218,45 @@ for (n.sub in c(3,6,9,12)) {
   print(myicobra(cd, "Transcript"))
   dev.off()
   
-}
+  # stageR txp-level confirmation
+  alpha <- .05
+  tot.true <- sum(rownames(padj) %in% dtu.txps)
+  tprs <- 1/tot.true * c(sum(drim.padj$transcript[drim.padj$dtu] < alpha, na.rm=TRUE),
+                         sum(drim.filt.padj$transcript[drim.padj$dtu] < alpha, na.rm=TRUE),
+                         sum(dex.padj$transcript[dex.padj$dtu] < alpha, na.rm=TRUE),
+                         sum(rats.b.padj$transcript[rats.b.padj$dtu] < alpha, na.rm=TRUE),
+                         sum(suppa.padj$transcript[suppa.padj$dtu] < alpha, na.rm=TRUE))
+  ofdrs <- c(ofdr(drim.padj,alpha=alpha),
+             ofdr(drim.filt.padj,alpha=alpha),
+             ofdr(dex.padj,alpha=alpha),
+             ofdr(rats.b.padj,alpha=alpha),
+             ofdr(suppa.padj,alpha=alpha))
+  methods <- c("DRIMSeq", "DRIMSeq-filt", "DEXSeq", "RATs", "SUPPA2")
+  (df <- data.frame(method=methods,
+                    TPR=tprs, OFDR=round(ofdrs,3)))
+  write.table(df,row.names=FALSE, quote=FALSE, sep="\t",
+              file=paste0(dir,"/OFDR_",n.sub,".tsv"))
 
-if (FALSE) {
-  x <- read.table("res_scaled/OFDR_3.tsv", header=TRUE)
-  for (i in c(6,9,12)) {
-    x <- rbind(x, read.table(paste0("res_scaled/OFDR_",i,".tsv"), header=TRUE))
-  }
-  x$n <- factor(rep(1:4*3, each=3), levels=1:4*3)
-  library(ggplot2)
-  library(RColorBrewer)
-  pdf(file="res_scaled/ofdr.pdf", width=7, height=5)
-  ggplot(x, aes(OFDR, TP, color=method, label=n)) +
-    geom_vline(xintercept=0.05, color="gray", linetype=2) + 
-    geom_point(size=4) + geom_path(show.legend=FALSE) +
-    geom_text(nudge_x = 0.02, size=8, show.legend = FALSE) +
-    plot_theme() + xlim(0,0.4) +
-    scale_colour_manual(values=gg_color_hue(4)[1:3])
+  # FDR breakdown plots
+
+  pdf(file=paste0(dir,"/dtu_gene_fdrbrk_",n.sub,".pdf"), width=9)
+  fdrBreakdownGene(padj.gene, alpha=.05)
   dev.off()
 
-  gg_color_hue <- function(n) {
-    hues = seq(15, 375, length = n + 1)
-    hcl(h = hues, l = 65, c = 100)[1:n]
-  }
-  
-  plot_theme <- function() {
-    theme_grey() +
-      theme(legend.position = "right",
-            panel.background = element_rect(fill = "white", colour = "black"),
-            panel.grid.minor.x = element_blank(),
-            panel.grid.minor.y = element_blank(),
-            strip.background = element_rect(fill = NA, colour = "black"),
-            axis.text.x = element_text(angle = 90, vjust = 0.5,
-                                       hjust = 1, size = 15),
-            axis.text.y = element_text(size = 15),
-            axis.title.x = element_text(size = 20),
-            axis.title.y = element_text(size = 20))
-  }
+  pdf(file=paste0(dir,"/dtu_txp_fdrbrk_",n.sub,".pdf"), width=9)
+  fdrBreakdownTxp(padj, alpha=.05)
+  dev.off()
+
+  # TP breakdown plot
+
+  pdf(file=paste0(dir,"/dtu_gene_tpbrk_",n.sub,".pdf"), width=9)
+  tpBreakdownGene(padj.gene, alpha=.05)
+  dev.off()
   
 }
+
+### OFDR plots
+
+pdf(file=file.path(dir,"ofdr.pdf"), width=7, height=5)
+plotOFDR(with2=FALSE)
+dev.off()

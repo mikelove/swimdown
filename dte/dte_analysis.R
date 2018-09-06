@@ -8,6 +8,7 @@ suppressPackageStartupMessages({
   library(edgeR)
   library(samr)
   library(iCOBRA)
+  library(ggplot2)
 })
 
 # all methods other than sleuth will use Salmon quants
@@ -24,17 +25,7 @@ txi.raw.g <- summarizeToGene(txi.raw, tx2gene=txdf[,2:1])
 # total sample size
 n <- 12
 
-myicobra <- function(cd, lvl="Gene") {
-  cp <- calculate_performance(cd,
-                              binary_truth="status",
-                              aspect=c("fdrtpr","fdrtprcurve"),
-                              thrs=c(.01,.05,.1))
-  cobraplot <- prepare_data_for_plot(cp)
-  plot_fdrtprcurve(cobraplot, plottype="points",
-                   xaxisrange=c(0,max(fdrtpr(cp)$FDR)),
-                   yaxisrange=c(0,max(fdrtpr(cp)$TPR)),
-                   title=paste0(lvl,"-level, n=",n.sub," vs ",n.sub))
-}
+source("dte_plots.R")
 
 # subset to, e.g. 1-3 vs 13-15 for n.sub=3, etc.
 for (n.sub in c(3,6,9,12)) {
@@ -144,4 +135,12 @@ for (n.sub in c(3,6,9,12)) {
   print(myicobra(cd, "Transcript"))
   dev.off()
 
+  pdf(file=paste0("res_dte/dge_fdrbkd_",n.sub,".pdf"), width=9)
+  fdrBreakdownGene(padj.gene, alpha=.05)
+  dev.off()
+
+  pdf(file=paste0("res_dte/dte_fdrbkd_",n.sub,".pdf"), width=9)
+  fdrBreakdownTxp(padj, alpha=.05)
+  dev.off()
+  
 }
