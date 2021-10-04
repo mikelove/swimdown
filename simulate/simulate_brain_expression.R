@@ -1,4 +1,10 @@
 #quants <- read.delim("ERR188297/quant.sf", string=FALSE)
+cortex_tpm <- read.delim("frontal_cortex.tsv.gz", skip=2)
+# average over the 10 samples
+quants <- data.frame(Name = cortex_tpm$transcript_id,
+                     TPM = rowMeans(quants[,-c(1,2)]))
+# rounding difference
+quants$TPM <- quants$TPM * 1e6 / sum(quants$TPM)
 
 suppressPackageStartupMessages(library(GenomicFeatures))
 #gtf <- "gencode.v26.annotation.gtf.gz"
@@ -14,15 +20,26 @@ all(quants$Name %in% txdf$TXNAME)
 quants$GENEID <- txdf$GENEID[match(quants$Name, txdf$TXNAME)]
 quants <- quants[order(quants$GENEID),]
 
+ebt <- exonsBy(txdb, by="tx", use.names=TRUE)
+txp.len <- sum(width(ebt))
+quants$Length <- txp.len[quants$Name]
+quants$NumReads <- quants$TPM * quants$Length
+quants$NumReads <- round(quants$NumReads * 50e6 / sum(quants$NumReads))
+table(quants$NumReads > 10)
+
 quant.tpm <- quants$TPM
 names(quant.tpm) <- quants$Name
 # threshold < 10 reads to 0 TPM
 quant.tpm[quants$NumReads < 10] <- 0
 quant.len <- quants$Length
 
-fasta <- "gencode.v28.transcripts.short.names.fa"
+# http://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_26/gencode.v26.transcripts.fa.gz
+fasta0 <- "gencode.v26.transcripts.fa"
+fasta <- "gencode.v26.transcripts.short.names.fa"
 suppressPackageStartupMessages(library(Biostrings))
-txseq <- readDNAStringSet(fasta)
+txseq <- readDNAStringSet(fasta0)
+names(txseq) <- sub("\\|.*","",names(txseq))
+writeXStringSet(txseq, file=fasta)
 #gc <- as.numeric(letterFrequency(txseq, "GC", as.prob=TRUE))
 
 
@@ -30,8 +47,8 @@ txseq <- readDNAStringSet(fasta)
 
 set.seed(1)
 # ratio of expressed genes with DGE, DTE or DTU
-dge.ratio <- 0.10
-dte.ratio <- 0.10
+dge.ratio <- 0
+dte.ratio <- 0
 dtu.ratio <- 0.10
 exprs.txs <- names(quant.tpm)[quant.tpm > 0]
 exprs.genes <- unique(txdf$GENEID[match(exprs.txs, txdf$TXNAME)])
@@ -65,41 +82,45 @@ names(iso.dtu) <- names(quant.tpm)
 
 sampleOne <- function(x) if (length(x) == 1) x else sample(x,1)
 
-# DGE
-for (i in seq_along(dge.genes)) {
-  if (i %% 100 == 0) cat(i)
-  this.txs <- which(txdf$GENEID == dge.genes[i])
-  tpm.this.txs <- quant.tpm[this.txs]
-  iso.dge[this.txs] <- TRUE
-  coinflip <- sample(c(FALSE,TRUE),1)
-  fc <- runif(1,2,6)
-  if (coinflip) {
-    tpms[this.txs,2] <- fc * tpm.this.txs
-  } else {
-    tpms[this.txs,1] <- fc * tpm.this.txs
+if (FALSE) {
+  
+  # DGE
+  for (i in seq_along(dge.genes)) {
+    if (i %% 100 == 0) cat(i)
+    this.txs <- which(txdf$GENEID == dge.genes[i])
+    tpm.this.txs <- quant.tpm[this.txs]
+    iso.dge[this.txs] <- TRUE
+    coinflip <- sample(c(FALSE,TRUE),1)
+    fc <- runif(1,2,6)
+    if (coinflip) {
+      tpms[this.txs,2] <- fc * tpm.this.txs
+    } else {
+      tpms[this.txs,1] <- fc * tpm.this.txs
+    }
   }
-}
 
-# DTE
-for (i in seq_along(dte.genes)) {
-  if (i %% 100 == 0) cat(i)
-  this.txs <- which(txdf$GENEID == dte.genes[i])
-  tpm.this.txs <- quant.tpm[this.txs]
-  exprs.tx <- sampleOne(which(tpm.this.txs > 0))
-  iso.dte[this.txs][exprs.tx] <- TRUE
-  # if only one expressed txp, then it's DTE and also not DTU
-  if (sum(tpm.this.txs > 0) == 1) {
-    iso.dte.only[this.txs][exprs.tx] <- TRUE
+  # DTE
+  for (i in seq_along(dte.genes)) {
+    if (i %% 100 == 0) cat(i)
+    this.txs <- which(txdf$GENEID == dte.genes[i])
+    tpm.this.txs <- quant.tpm[this.txs]
+    exprs.tx <- sampleOne(which(tpm.this.txs > 0))
+    iso.dte[this.txs][exprs.tx] <- TRUE
+    # if only one expressed txp, then it's DTE and also not DTU
+    if (sum(tpm.this.txs > 0) == 1) {
+      iso.dte.only[this.txs][exprs.tx] <- TRUE
+    }
+    coinflip <- sample(c(FALSE,TRUE),1)
+    fc <- runif(1,2,6)
+    if (coinflip) {
+      tpms[this.txs,2][exprs.tx] <- fc * tpm.this.txs[exprs.tx]
+    } else {
+      tpms[this.txs,1][exprs.tx] <- fc * tpm.this.txs[exprs.tx]
+    }
   }
-  coinflip <- sample(c(FALSE,TRUE),1)
-  fc <- runif(1,2,6)
-  if (coinflip) {
-    tpms[this.txs,2][exprs.tx] <- fc * tpm.this.txs[exprs.tx]
-  } else {
-    tpms[this.txs,1][exprs.tx] <- fc * tpm.this.txs[exprs.tx]
-  }
-}
 
+}
+  
 # DTU
 for (i in seq_along(dtu.genes)) {
   if (i %% 100 == 0) cat(i)
