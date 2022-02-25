@@ -47,9 +47,9 @@ writeXStringSet(txseq, file=fasta)
 
 set.seed(1)
 # ratio of expressed genes with DGE, DTE or DTU
-dge.ratio <- 0
+dge.ratio <- 0.1
 dte.ratio <- 0
-dtu.ratio <- 0.10
+dtu.ratio <- 0.1
 exprs.txs <- names(quant.tpm)[quant.tpm > 0]
 exprs.genes <- unique(txdf$GENEID[match(exprs.txs, txdf$TXNAME)])
 dge.genes <- sample(exprs.genes, length(exprs.genes) * dge.ratio)
@@ -81,6 +81,7 @@ names(iso.dte.only) <- names(quant.tpm)
 names(iso.dtu) <- names(quant.tpm)
 
 sampleOne <- function(x) if (length(x) == 1) x else sample(x,1)
+sampleUpToTwo <- function(x) if (length(x) <= 2) x else sample(x,2)
 
 if (FALSE) {
   
@@ -111,7 +112,8 @@ if (FALSE) {
       iso.dte.only[this.txs][exprs.tx] <- TRUE
     }
     coinflip <- sample(c(FALSE,TRUE),1)
-    fc <- runif(1,2,6)
+    #fc <- runif(1,2,6)
+    fc <- runif(1,2,3)
     if (coinflip) {
       tpms[this.txs,2][exprs.tx] <- fc * tpm.this.txs[exprs.tx]
     } else {
@@ -129,13 +131,16 @@ for (i in seq_along(dtu.genes)) {
   high.tx <- unname(which.max(tpm.this.txs))
   # try to pick a non-zero TPM txp
   low.tx <- if (all(tpm.this.txs[-high.tx] == 0)) {
-    sampleOne(which(tpm.this.txs == 0))
+    sampleUpToTwo(which(tpm.this.txs == 0))
   } else {
-    sampleOne(which(tpm.this.txs > 0 & tpm.this.txs < max(tpm.this.txs)))
+    #sampleOne(which(tpm.this.txs > 0 & tpm.this.txs < max(tpm.this.txs)))
+    sampleUpToTwo(which(tpm.this.txs > 0 & tpm.this.txs < max(tpm.this.txs)))
   }
   iso.dtu[this.txs][c(low.tx,high.tx)] <- TRUE
-  tpms[this.txs,2][low.tx] <- tpm.this.txs[high.tx]
-  tpms[this.txs,2][high.tx] <- tpm.this.txs[low.tx]
+  for (lt in low.tx) {
+    tpms[this.txs,2][lt] <- tpm.this.txs[high.tx] / length(low.tx)
+  }
+  tpms[this.txs,2][high.tx] <- sum(tpm.this.txs[low.tx])
 }
 
 table(iso.dte,iso.dtu,iso.dge)
