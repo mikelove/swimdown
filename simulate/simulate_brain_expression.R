@@ -2,7 +2,7 @@
 cortex_tpm <- read.delim("frontal_cortex.tsv.gz", skip=2)
 # average over the 10 samples
 quants <- data.frame(Name = cortex_tpm$transcript_id,
-                     TPM = rowMeans(quants[,-c(1,2)]))
+                     TPM = rowMeans(cortex_tpm[,-c(1,2)]))
 # rounding difference
 quants$TPM <- quants$TPM * 1e6 / sum(quants$TPM)
 
@@ -83,7 +83,8 @@ names(iso.dtu) <- names(quant.tpm)
 sampleOne <- function(x) if (length(x) == 1) x else sample(x,1)
 sampleUpToTwo <- function(x) if (length(x) <= 2) x else sample(x,2)
 
-if (FALSE) {
+onlyDTU <- FALSE  
+if (!onlyDTU) {
   
   # DGE
   for (i in seq_along(dge.genes)) {
